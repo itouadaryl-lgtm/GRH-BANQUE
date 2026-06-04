@@ -27,7 +27,7 @@ export async function startServer() {
 
   app.listen(PORT, "0.0.0.0", () => {
     console.log(`[AFG BANK ARCHIVES BACKEND] listening on http://0.0.0.0:${PORT}`);
-    console.log("Port is hardcoded by infrastructure to 3000.");
+    console.log("Production: PORT injected by Railway infrastructure.");
   });
 }
 

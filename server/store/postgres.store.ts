@@ -7,7 +7,15 @@ import { COLLECTION_TABLES, COLLECTIONS, emptyPayload } from "./collections.js";
 const { Pool } = pg;
 
 function getConnectionString(): string | null {
+  // Railway provides DATABASE_URL automatically when PostgreSQL is attached
   if (process.env.DATABASE_URL) return process.env.DATABASE_URL;
+  
+  // Fallback for individual Railway PostgreSQL env vars (rare cases)
+  if (process.env.PGHOST && !process.env.DATABASE_URL && process.env.PGUSER) {
+    return `postgresql://${encodeURIComponent(process.env.PGUSER)}:${encodeURIComponent(process.env.PGPASSWORD || "")}@${process.env.PGHOST}:${process.env.PGPORT || "5432"}/${process.env.PGDATABASE || "railway"}`;
+  }
+  
+  // Local development config
   if (process.env.POSTGRES_ENABLED !== "true") return null;
   const host = process.env.POSTGRES_HOST ?? "localhost";
   const port = process.env.POSTGRES_PORT ?? "5432";
