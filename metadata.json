@@ -1,0 +1,6 @@
+{
+  "name": "AFG BANK - Archives RH",
+  "description": "Système de Gestion Électronique de Documents (GED) ultra-sécurisé pour les ressources humaines d’AFG BANK Gabon, équipé du chatbot IA ARHI.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

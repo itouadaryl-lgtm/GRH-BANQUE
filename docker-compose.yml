@@ -1,0 +1,52 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: archives_rh
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-Postgres123}
+    ports:
+      - "5432:5432"
+    volumes:
+      - pg-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d archives_rh"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  app:
+    build: .
+    ports:
+      - "3000:3000"
+    environment:
+      NODE_ENV: production
+      DATABASE_URL: postgresql://postgres:${POSTGRES_PASSWORD:-Postgres123}@postgres:5432/archives_rh
+      POSTGRES_ENABLED: "true"
+      JWT_SECRET: ${JWT_SECRET:-afg-bank-dev-secret-change-in-production}
+      JWT_EXPIRES_IN: 12h
+      BCRYPT_ROUNDS: "12"
+      GEMINI_API_KEY: ${GEMINI_API_KEY:-}
+    volumes:
+      - grh-data:/app/data
+      - upload-data:/app/uploads
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: unless-stopped
+
+  pgadmin:
+    image: dpage/pgadmin4:8.14
+    environment:
+      PGADMIN_DEFAULT_EMAIL: admin@afgbank.com
+      PGADMIN_DEFAULT_PASSWORD: admin123
+    ports:
+      - "5050:80"
+    depends_on:
+      - postgres
+    restart: unless-stopped
+
+volumes:
+  grh-data:
+  pg-data:
+  upload-data:
