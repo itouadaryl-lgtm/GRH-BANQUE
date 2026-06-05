@@ -16,12 +16,24 @@ export async function createApp(db?: Database): Promise<{ app: Express; db: Data
   const database = db ?? (await Database.create());
   const app = express();
 
+  // PRODUCTION: Serve static files FIRST (before auth middleware)
+  if (process.env.NODE_ENV === "production") {
+    const distPath = path.join(process.cwd(), "dist");
+    app.use(express.static(distPath));
+    app.get("*", (req, res) => {
+      if (req.path.startsWith("/api")) {
+        return res.status(404).json({ success: false, message: "Route API introuvable" });
+      }
+      return res.sendFile(path.join(distPath, "index.html"));
+    });
+  }
+
   app.use(express.json({ limit: "60mb" }));
   app.use(helmet({ contentSecurityPolicy: false }));
   app.use(compression());
   app.use(morgan(process.env.NODE_ENV === "production" ? "combined" : "dev"));
 
-  // Vite middleware AFTER JSON parser but use conditional route handling
+  // DEVELOPMENT: Vite middleware
   if (process.env.NODE_ENV !== "production") {
     try {
       const { createServer: createViteServer } = await import("vite");
@@ -29,7 +41,6 @@ export async function createApp(db?: Database): Promise<{ app: Express; db: Data
         server: { middlewareMode: true },
         appType: "spa",
       });
-      // Vite handles all non-API routes for SPA
       app.use((req, res, next) => {
         if (req.path.startsWith("/api")) return next();
         vite.middlewares(req, res, next);
@@ -46,21 +57,13 @@ export async function createApp(db?: Database): Promise<{ app: Express; db: Data
   });
   app.use("/api/auth/login", authLimiter);
 
-  app.use(
-    rateLimit({
-      windowMs: 60_000,
-      max: 100,
-      standardHeaders: true,
-      legacyHeaders: false,
-    })
-  );
-
   app.get("/api/health", async (_req, res) => {
     const health = await database.dualStore.healthCheck();
     res.json({ success: true, data: health });
   });
 
-  app.use((req, res, next) => {
+  // AUTH: Only apply to /api routes, NOT to frontend routes
+  app.use("/api", (req, res, next) => {
     if (
       req.method === "POST" &&
       (req.path === "/api/auth/login" ||
