@@ -16,24 +16,46 @@ export async function createApp(db?: Database): Promise<{ app: Express; db: Data
   const database = db ?? (await Database.create());
   const app = express();
 
-  // PRODUCTION: Serve static files FIRST (before auth middleware)
-  if (process.env.NODE_ENV === "production") {
-    const distPath = path.join(process.cwd(), "dist");
-    app.use(express.static(distPath));
-    app.get("*", (req, res) => {
-      if (req.path.startsWith("/api")) {
-        return res.status(404).json({ success: false, message: "Route API introuvable" });
-      }
-      return res.sendFile(path.join(distPath, "index.html"));
-    });
-  }
-
+  // 1. JSON parser
   app.use(express.json({ limit: "60mb" }));
+
+  // 2. Security middleware
   app.use(helmet({ contentSecurityPolicy: false }));
   app.use(compression());
   app.use(morgan(process.env.NODE_ENV === "production" ? "combined" : "dev"));
 
-  // DEVELOPMENT: Vite middleware
+  // 3. Rate limiting (must be before API routes)
+  const authLimiter = rateLimit({
+    windowMs: 60_000,
+    max: 5,
+    message: { success: false, message: "Trop de tentatives — réessayez dans 1 minute" },
+  });
+  app.use("/api/auth/login", authLimiter);
+
+  // 4. API health check
+  app.get("/api/health", async (_req, res) => {
+    const health = await database.dualStore.healthCheck();
+    res.json({ success: true, data: health });
+  });
+
+  // 5. AUTH: Only apply to /api routes, NOT to frontend routes
+  // Note: When using app.use("/api"), Express strips the "/api" prefix from req.path
+  app.use("/api", (req, res, next) => {
+    if (
+      req.method === "POST" &&
+      (req.path === "/auth/login" ||
+        req.path === "/auth/forgot-password" ||
+        req.path === "/auth/reset-password")
+    ) {
+      return next();
+    }
+    return requireAuth(database)(req, res, next);
+  });
+
+  // 6. All API routes
+  registerAllRoutes(app, database);
+
+  // 7. DEVELOPMENT: Vite middleware (after API routes)
   if (process.env.NODE_ENV !== "production") {
     try {
       const { createServer: createViteServer } = await import("vite");
@@ -50,34 +72,16 @@ export async function createApp(db?: Database): Promise<{ app: Express; db: Data
     }
   }
 
-  const authLimiter = rateLimit({
-    windowMs: 60_000,
-    max: 5,
-    message: { success: false, message: "Trop de tentatives — réessayez dans 1 minute" },
-  });
-  app.use("/api/auth/login", authLimiter);
+  // 8. PRODUCTION: Static file serving and SPA catch-all (after API routes)
+  if (process.env.NODE_ENV === "production") {
+    const distPath = path.join(process.cwd(), "dist");
+    app.use(express.static(distPath));
+    app.get("*", (req, res) => {
+      return res.sendFile(path.join(distPath, "index.html"));
+    });
+  }
 
-  app.get("/api/health", async (_req, res) => {
-    const health = await database.dualStore.healthCheck();
-    res.json({ success: true, data: health });
-  });
-
-  // AUTH: Only apply to /api routes, NOT to frontend routes
-  // Note: When using app.use("/api"), Express strips the "/api" prefix from req.path
-  app.use("/api", (req, res, next) => {
-    if (
-      req.method === "POST" &&
-      (req.path === "/auth/login" ||
-        req.path === "/auth/forgot-password" ||
-        req.path === "/auth/reset-password")
-    ) {
-      return next();
-    }
-    return requireAuth(database)(req, res, next);
-  });
-
-  registerAllRoutes(app, database);
-
+  // 9. Error handler (always last)
   app.use(errorHandler);
 
   return { app, db: database };
