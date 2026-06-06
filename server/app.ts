@@ -63,12 +63,13 @@ export async function createApp(db?: Database): Promise<{ app: Express; db: Data
   });
 
   // AUTH: Only apply to /api routes, NOT to frontend routes
+  // Note: When using app.use("/api"), Express strips the "/api" prefix from req.path
   app.use("/api", (req, res, next) => {
     if (
       req.method === "POST" &&
-      (req.path === "/api/auth/login" ||
-        req.path === "/api/auth/forgot-password" ||
-        req.path === "/api/auth/reset-password")
+      (req.path === "/auth/login" ||
+        req.path === "/auth/forgot-password" ||
+        req.path === "/auth/reset-password")
     ) {
       return next();
     }

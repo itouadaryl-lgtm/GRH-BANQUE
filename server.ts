@@ -8,7 +8,7 @@ import { createApp } from "./server/app.js";
 
 dotenv.config();
 
-const PORT = process.env.PORT || 3000;
+const PORT = Number(process.env.PORT) || 3000;
 
 export async function startServer() {
   const { app } = await createApp();
