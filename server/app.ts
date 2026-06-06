@@ -20,12 +20,6 @@ export async function createApp(db?: Database): Promise<{ app: Express; db: Data
   if (process.env.NODE_ENV === "production") {
     const distPath = path.join(process.cwd(), "dist");
     app.use(express.static(distPath));
-    app.get("*", (req, res) => {
-      if (req.path.startsWith("/api")) {
-        return res.status(404).json({ success: false, message: "Route API introuvable" });
-      }
-      return res.sendFile(path.join(distPath, "index.html"));
-    });
   }
 
   app.use(express.json({ limit: "60mb" }));
@@ -77,6 +71,13 @@ export async function createApp(db?: Database): Promise<{ app: Express; db: Data
   });
 
   registerAllRoutes(app, database);
+
+  // Catch-all for SPA: only if no API route matched
+  if (process.env.NODE_ENV === "production") {
+    app.get("*", (req, res) => {
+      return res.sendFile(path.join(path.join(process.cwd(), "dist"), "index.html"));
+    });
+  }
 
   app.use(errorHandler);
 

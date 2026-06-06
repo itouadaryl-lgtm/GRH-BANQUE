@@ -17,6 +17,46 @@ import { registerFinanceRoutes } from "./finance.routes.js";
 import { registerNotificationsRoutes } from "./notifications.routes.js";
 import { registerExportRoutes } from "./export.routes.js";
 import { registerImportRoutes } from "./import.routes.js";
+import type { Request, Response } from "express";
+
+function serializeRoute(layer: any): any {
+  if (!layer || typeof layer !== "object") return null;
+  if (layer.route) {
+    const methods: Record<string, boolean> = {};
+    for (const m of Object.keys(layer.route.methods)) {
+      methods[m] = true;
+    }
+    return {
+      method: Object.keys(methods),
+      path: layer.route.path,
+      stackDepth: layer.stack ? layer.stack.length : 0,
+    };
+  }
+  if (layer.name === "router" && layer.handle) {
+    const children: any[] = [];
+    for (const child of layer.handle.stack) {
+      const childLayer = child.layer || child;
+      const serialized = serializeRoute(childLayer);
+      if (serialized) children.push(serialized);
+    }
+    return {
+      router: true,
+      path: layer.regexp?.toString() || "",
+      prefix: layer.mountpath || "",
+      routes: children,
+    };
+  }
+  return null;
+}
+
+export function listRoutes(app: Express): any[] {
+  const routes: any[] = [];
+  for (const layer of (app as any)._router.stack) {
+    const serialized = serializeRoute(layer);
+    if (serialized) routes.push(serialized);
+  }
+  return routes;
+}
 
 export function registerAllRoutes(app: Express, db: Database): void {
   registerSwaggerRoutes(app);
@@ -36,5 +76,10 @@ export function registerAllRoutes(app: Express, db: Database): void {
   registerNotificationsRoutes(app, db);
   registerExportRoutes(app, db);
   registerImportRoutes(app, db);
+
+  app.get("/api/debug/routes", (_req: Request, res: Response) => {
+    const routes = listRoutes(app);
+    res.json({ success: true, data: routes });
+  });
 }
 
