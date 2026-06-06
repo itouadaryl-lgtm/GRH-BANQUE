@@ -6,6 +6,15 @@ import { COLLECTION_TABLES, COLLECTIONS, emptyPayload } from "./collections.js";
 
 const { Pool } = pg;
 
+function isRailwayEnv(): boolean {
+  return !!(
+    process.env.RAILWAY_ENVIRONMENT ||
+    process.env.RAILWAY_PUBLIC_DOMAIN ||
+    process.env.RAILWAY_SERVICE_NAME ||
+    process.env.RAILWAY_PROJECT_NAME
+  );
+}
+
 function getConnectionString(): string | null {
   // Railway provides DATABASE_URL automatically when PostgreSQL is attached
   if (process.env.DATABASE_URL) return process.env.DATABASE_URL;
@@ -25,19 +34,40 @@ function getConnectionString(): string | null {
   return `postgresql://${encodeURIComponent(user)}:${encodeURIComponent(password)}@${host}:${port}/${db}`;
 }
 
+function getPoolConfig(conn: string): pg.PoolConfig {
+  const base: pg.PoolConfig = {
+    connectionString: conn,
+    max: 10,
+    idleTimeoutMillis: 30_000,
+    connectionTimeoutMillis: 5_000,
+  };
+
+  // Railway PostgreSQL requires SSL with server certificate verification disabled
+  // (Railway self-signed cert is not in default trust store)
+  if (isRailwayEnv()) {
+    base.ssl = { rejectUnauthorized: false };
+  } else if (process.env.NODE_ENV === "production") {
+    base.ssl = { rejectUnauthorized: false };
+  }
+
+  return base;
+}
+
 let pool: pg.Pool | null = null;
 let schemaReady = false;
 
 function getPool(): pg.Pool | null {
-  const conn = getConnectionString();
+  // Always attempt to create pool if connection string exists (needed for production read replica)
+  let conn: string | null;
+  try {
+    conn = getConnectionString();
+  } catch {
+    return null;
+  }
   if (!conn) return null;
   if (!pool) {
-    pool = new Pool({
-      connectionString: conn,
-      max: 10,
-      idleTimeoutMillis: 30_000,
-      connectionTimeoutMillis: 2_000,
-    });
+    const config = getPoolConfig(conn);
+    pool = new Pool(config);
     pool.on("error", (err) => console.error("[PostgreSQL] Pool error:", err.message));
   }
   return pool;

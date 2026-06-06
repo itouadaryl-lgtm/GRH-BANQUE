@@ -6,6 +6,10 @@ import { COLLECTIONS, emptyPayload } from "./collections.js";
 import { JsonStore } from "./json.store.js";
 import { pgStore } from "./postgres.store.js";
 
+function isProduction(): boolean {
+  return process.env.NODE_ENV === "production" || process.env.RAILWAY_ENVIRONMENT === "production";
+}
+
 export class DualStoreError extends Error {
   constructor(message: string) {
     super(message);
@@ -34,9 +38,16 @@ export class DualStore {
     let cache = json.getCache();
     const hasJsonData = COLLECTIONS.some((c) => cache[c].length > 0);
 
-    if (pgStore.isEnabled()) {
+    const pgEnabled = pgStore.isEnabled();
+
+    if (pgEnabled) {
       const reachable = await pgStore.ping();
-      if (reachable) {
+      if (!reachable) {
+        if (isProduction()) {
+          throw new DualStoreError("PostgreSQL injoignable au démarrage — service indisponible");
+        }
+        console.error("[DualStore] ❌ PostgreSQL injoignable — continuation en mode JSON-only (non-production)");
+      } else {
         await pgStore.ensureSchema();
         const fromPg = await pgStore.loadAll();
         if (fromPg && !hasJsonData) {
@@ -55,8 +66,13 @@ export class DualStore {
         if (seed[key]?.length) cache[key] = seed[key];
       }
       json.writeSync(cache);
-      if (pgStore.isEnabled() && (await pgStore.ping())) {
-        await pgStore.saveAll(cache);
+      if (pgEnabled) {
+        const reachable = await pgStore.ping();
+        if (reachable) {
+          await pgStore.saveAll(cache);
+        } else if (isProduction()) {
+          throw new DualStoreError("PostgreSQL injoignable — impossible de synchroniser les données initiales");
+        }
       }
     }
 
@@ -75,9 +91,17 @@ export class DualStore {
     if (this.pgAvailable && jsonOk) {
       console.log("[DualStore] ✅ Persistance double active — JSON + PostgreSQL synchronisés");
     } else if (jsonOk) {
-      console.log("[DualStore] ⚠️  Mode dégradé — JSON seul (PostgreSQL injoignable)");
+      if (isProduction()) {
+        console.error("[DualStore] ❌ MODE DÉGRADÉ — JSON seul en production (PostgreSQL injoignable)");
+      } else {
+        console.log("[DualStore] ⚠️  Mode dégradé — JSON seul (PostgreSQL injoignable)");
+      }
     } else if (this.pgAvailable) {
       console.log("[DualStore] ⚠️  Mode dégradé — PostgreSQL seul (JSON injoignable)");
+    } else {
+      if (isProduction()) {
+        console.error("[DualStore] ❌ ERREUR CRITIQUE — Aucun stockage disponible en production");
+      }
     }
   }
 
@@ -92,6 +116,11 @@ export class DualStore {
     let mode: HealthStatus["mode"] = "json-only";
     if (this.pgAvailable && jsonStatus === "ok") mode = "dual";
     else if (this.pgAvailable) mode = "pg-only";
+
+    if (isProduction() && mode === "json-only") {
+      console.error("[DualStore] ❌ Santé: PostgreSQL DOWN en production — ALERTE");
+    }
+
     return { pg: pgStatus, json: jsonStatus, mode };
   }
 
@@ -101,26 +130,43 @@ export class DualStore {
     if (idx >= 0) list[idx] = data;
     else list.push(data);
 
-    const results = await Promise.allSettled([
-      Promise.resolve().then(() => this.json.setItem(collection, id, data)),
-      this.pgAvailable ? pgStore.upsert(collection, id, data) : Promise.resolve(),
-    ]);
+    const jsonPromise = Promise.resolve().then(() => this.json.setItem(collection, id, data));
+    const pgPromise = this.pgAvailable ? pgStore.upsert(collection, id, data) : Promise.resolve();
 
-    const jsonFailed = results[0].status === "rejected";
-    const pgFailed = results[1].status === "rejected";
-    if (jsonFailed) console.warn("[DualStore] JSON write failed:", (results[0] as PromiseRejectedResult).reason);
-    if (pgFailed) console.warn("[DualStore] PG write failed:", (results[1] as PromiseRejectedResult).reason);
-    if (jsonFailed && pgFailed) throw new DualStoreError(`Échec écriture dual sur ${collection}/${id}`);
+    const [jsonResult, pgResult] = await Promise.allSettled([jsonPromise, pgPromise]);
+
+    const jsonFailed = jsonResult.status === "rejected";
+    const pgFailed = pgResult.status === "rejected";
+
+    if (jsonFailed) {
+      console.error("[DualStore] JSON write failed:", (jsonResult as PromiseRejectedResult).reason);
+    }
+    if (pgFailed) {
+      console.error("[DualStore] PG write failed:", (pgResult as PromiseRejectedResult).reason);
+    }
+
+    if (jsonFailed && pgFailed) {
+      throw new DualStoreError(`Échec écriture dual sur ${collection}/${id}`);
+    }
+
+    if (pgFailed && isProduction()) {
+      console.error(`[DualStore] ❌ Écriture PostgreSQL échouée en production: ${collection}/${id}`);
+    }
   }
 
   async delete(collection: CollectionName, id: string): Promise<void> {
     this.cache[collection] = this.cache[collection].filter((item) => String(item.id) !== id);
-    const results = await Promise.allSettled([
-      Promise.resolve().then(() => this.json.deleteItem(collection, id)),
-      this.pgAvailable ? pgStore.remove(collection, id) : Promise.resolve(),
-    ]);
+    const jsonPromise = Promise.resolve().then(() => this.json.deleteItem(collection, id));
+    const pgPromise = this.pgAvailable ? pgStore.remove(collection, id) : Promise.resolve();
+
+    const results = await Promise.allSettled([jsonPromise, pgPromise]);
+
     if (results[0].status === "rejected" && results[1].status === "rejected") {
       throw new DualStoreError(`Échec suppression dual sur ${collection}/${id}`);
+    }
+
+    if (results[1].status === "rejected" && isProduction()) {
+      console.error(`[DualStore] ❌ Suppression PostgreSQL échouée en production: ${collection}/${id}`);
     }
   }
 
@@ -129,8 +175,11 @@ export class DualStore {
       try {
         const row = await pgStore.get(collection, id);
         if (row) return row;
-      } catch {
-        /* fallback JSON */
+      } catch (err) {
+        console.error(`[DualStore] PG get failed: ${collection}/${id}`, err);
+        if (isProduction()) {
+          console.error(`[DualStore] ❌ Lecture PostgreSQL échouée en production: ${collection}/${id}`);
+        }
       }
     }
     return this.cache[collection].find((item) => String(item.id) === id) ?? null;
@@ -143,8 +192,11 @@ export class DualStore {
     if (this.pgAvailable) {
       try {
         return await pgStore.list(collection, filters);
-      } catch {
-        /* fallback */
+      } catch (err) {
+        console.error(`[DualStore] PG list failed: ${collection}`, err);
+        if (isProduction()) {
+          console.error(`[DualStore] ❌ Liste PostgreSQL échouée en production: ${collection}`);
+        }
       }
     }
     let items = [...this.cache[collection]];
@@ -159,8 +211,17 @@ export class DualStore {
   async sync(): Promise<void> {
     this.json.flush();
     if (this.pgAvailable) {
-      await pgStore.saveAll(this.cache);
-      console.log("[DualStore] Sync JSON → PostgreSQL terminée");
+      try {
+        await pgStore.saveAll(this.cache);
+        console.log("[DualStore] Sync JSON → PostgreSQL terminée");
+      } catch (err) {
+        console.error("[DualStore] ❌ Sync PostgreSQL échouée:", err);
+        if (isProduction()) {
+          throw new DualStoreError(`Échec synchronisation PostgreSQL en production: ${err}`);
+        }
+      }
+    } else if (isProduction()) {
+      console.error("[DualStore] ❌ Sync impossible — PostgreSQL DOWN en production");
     }
   }
 
@@ -168,39 +229,37 @@ export class DualStore {
     this.json.replaceAll(this.cache);
     if (this.pgAvailable) {
       void pgStore.saveAll(this.cache).catch((err: Error) =>
-        console.warn("[DualStore] Sync PG différée échouée:", err.message)
+        console.error("[DualStore] ❌ Sync PG différée échouée:", err.message)
       );
     }
   }
 
   async saveNow(): Promise<void> {
     this.json.flush();
-    if (this.pgAvailable) await pgStore.saveAll(this.cache);
+    if (this.pgAvailable) {
+      try {
+        await pgStore.saveAll(this.cache);
+      } catch (err) {
+        console.error("[DualStore] ❌ saveNow PostgreSQL échouée:", err);
+        if (isProduction()) {
+          throw new DualStoreError(`Échec saveNow PostgreSQL en production: ${err}`);
+        }
+      }
+    }
   }
 
   async init(): Promise<void> {
     await this.refreshPgStatus();
-    if (this.pgAvailable) await pgStore.saveAll(this.cache);
+    if (this.pgAvailable) {
+      try {
+        await pgStore.saveAll(this.cache);
+      } catch (err) {
+        console.error("[DualStore] ❌ init PostgreSQL échouée:", err);
+        if (isProduction()) {
+          throw new DualStoreError(`Échec initialisation PostgreSQL en production: ${err}`);
+        }
+      }
+    }
     this.logMode();
   }
 }
-
-export type StoreUser = {
-  id: string;
-  matricule: string;
-  email: string;
-  passwordHash: string;
-  firstName: string;
-  lastName: string;
-  fullName: string;
-  photoUrl?: string;
-  phone?: string;
-  birthDate?: string;
-  hireDate?: string;
-  department?: string;
-  position?: string;
-  agencyId: string;
-  roleId: string;
-  status: string;
-  failedLoginAttempts: number;
-};
