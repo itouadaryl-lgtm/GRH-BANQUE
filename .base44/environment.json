@@ -1,0 +1,18 @@
+{
+  "previewPort": 3000,
+  "healthPath": "/api/health",
+  "startCommand": "docker compose -f docker-compose.base44.yml up -d",
+  "secrets": [
+    {
+      "name": "JWT_SECRET",
+      "description": "JWT signing secret; generated for development. Replace for production.",
+      "requiredAtBoot": true,
+      "generatedForDevelopment": true
+    },
+    {
+      "name": "GEMINI_API_KEY",
+      "description": "Optional Gemini API key from Google AI Studio for ARHI; without it the existing simulation mode is used.",
+      "requiredAtBoot": false
+    }
+  ]
+}

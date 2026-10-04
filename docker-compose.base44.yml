@@ -1,0 +1,61 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    restart: on-failure
+    environment:
+      POSTGRES_DB: archives_rh
+      POSTGRES_USER: base44
+      POSTGRES_PASSWORD: base44-local-db-7f92d6
+    volumes:
+      - pg-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U base44 -d archives_rh"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  app:
+    image: node:22-bookworm-slim
+    restart: on-failure
+    working_dir: /app
+    command: ["sh", "-ec", "npm ci --no-audit --no-fund && exec npx tsx watch server.ts"]
+    ports:
+      - "3000:3000"
+    env_file:
+      - /run/base44/app.env
+    environment:
+      NODE_ENV: development
+      PORT: "3000"
+      POSTGRES_ENABLED: "true"
+      POSTGRES_HOST: postgres
+      POSTGRES_PORT: "5432"
+      POSTGRES_DB: archives_rh
+      POSTGRES_USER: base44
+      POSTGRES_PASSWORD: base44-local-db-7f92d6
+      DATA_DIR: /app/data
+      UPLOAD_DIR: /app/uploads/
+      __VITE_ADDITIONAL_SERVER_ALLOWED_HOSTS: ${__VITE_ADDITIONAL_SERVER_ALLOWED_HOSTS}
+    volumes:
+      - .:/app
+      - node-modules:/app/node_modules
+      - grh-data:/app/data
+      - upload-data:/app/uploads
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test:
+        - CMD
+        - node
+        - -e
+        - "Promise.all([fetch('http://127.0.0.1:3000/').then(async r=>{if(!r.ok || !(await r.text()).includes('/src/main.tsx'))throw Error('Frontend unavailable')}),fetch('http://127.0.0.1:3000/api/health').then(async r=>{const b=await r.json();if(!r.ok || b.data?.mode!=='dual')throw Error('Backend/storage unavailable')})]).catch(e=>{console.error(e.message);process.exit(1)})"
+      interval: 15s
+      timeout: 5s
+      start_period: 120s
+      retries: 5
+
+volumes:
+  node-modules:
+  pg-data:
+  grh-data:
+  upload-data:
